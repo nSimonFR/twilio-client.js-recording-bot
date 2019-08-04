@@ -5,21 +5,16 @@ require('dotenv').config();
 const browserify = require('browserify-middleware');
 const express = require('express');
 const expressWinston = require('express-winston');
-const { appendFile } = require('fs');
+const { appendFile, unlinkSync: unlink } = require('fs');
 const { sync: mkdirp } = require('mkdirp');
 const { join } = require('path');
 const puppeteer = require('puppeteer');
 const { AccessToken } = require('twilio').jwt;
 const winston = require('winston');
 
-const app = express();
-
 let browser = null;
 let page = null;
 let server = null;
-let actualRoomSid = null;
-let localParticipantSid = null;
-let shouldClose = false;
 let isClosing = false;
 
 const logger = winston.createLogger({
@@ -28,123 +23,28 @@ const logger = winston.createLogger({
     winston.format.printf(info => `${info.timestamp} ${info.level}: ${info.message}`),
   ),
   transports: [
-    new winston.transports.Console()
+    new winston.transports.Console({ level: 'info' }),
   ]
 });
 
 const loggerMiddleware = expressWinston.logger({ winstonInstance: logger });
 
-app.get('/', (req, res) => res.sendFile(join(__dirname, 'index.html')));
-
-app.get('/bundle.js', browserify([
-  'twilio-video',
-  { [join(__dirname, 'app.js')]: { run: true } }
-]));
+const app = express();
 
 app.use(loggerMiddleware);
 
-async function main({ port, token, roomSid }) {
-  logger.info(`
+app.get('/', (req, res) => res.sendFile(join(__dirname, 'index.html')));
 
-  recording-bot's PID is ${process.pid}.
+app.get('/bundle.js', browserify([
+  'twilio-client',
+  { [join(__dirname, 'app.js')]: { run: true } }
+]));
 
-  You can send SIGUSR2 to this PID to cause recording-bot to stop recording and to
-  disconnect from the Room. For example,
-
-    kill -s USR2 ${process.pid}
-
-  Happy recording!
-`);
-
-  logger.debug('Starting HTTP server...');
-  server = await listen(port);
-  logger.info(`Started HTTP server. Listening on ${port}.`);
-  if (shouldClose) {
-    await close();
-    return;
-  }
-
-  logger.debug('Launching browser...');
-  browser = await puppeteer.launch({
-    args: [
-      '--disable-gesture-requirement-for-media-playback'
-    ]
-  });
-  logger.info('Launched browser.');
-  if (shouldClose) {
-    await close();
-    return;
-  }
-
-  logger.debug('Opening new page...');
-  page = await browser.newPage();
-  logger.info('Opened new page.');
-  if (shouldClose) {
-    await close();
-    return;
-  }
-
-  logger.debug(`Navigating to http://localhost:${port}...`);
-  await page.goto(`http://localhost:${port}`, { waitUntil: 'domcontentloaded' });
-  logger.info(`Navigated to http://localhost:${port}.`);
-  if (shouldClose) {
-    await close();
-    return;
-  }
-
-  logger.debug('Registering callback(s)...');
-  await Promise.all([
-    page.exposeFunction('debug', message => { logger.debug(message); }),
-    page.exposeFunction('error', message => { logger.error(message); }),
-    page.exposeFunction('info', message => { logger.info(message); }),
-    page.exposeFunction('createRecording', filepath => {
-      mkdirp(join(...filepath.slice(0, filepath.length - 1)));
-    }),
-    page.exposeFunction('appendRecording', (filepath, chunk) => {
-      const filename = join(...filepath);
-      const buffer = new Buffer(stringToArrayBuffer(chunk));
-      appendFile(filename, buffer, error => {
-        if (error) {
-          logger.error(`\n\n${indent(error.stack)}\n`);
-          return;
-        }
-        logger.debug(`Wrote chunk (${buffer.byteLength} bytes)`);
-      });
-    })
-  ]);
-  logger.info('Registered callback(s).');
-  if (shouldClose) {
-    await close();
-    return;
-  }
-
-  const {
-    roomSid: actualRoomSid,
-    localParticipantSid
-  } = await page.evaluate(`main("${token}", "${roomSid}")`);
-  if (shouldClose) {
-    await close();
-    return;
-  }
-}
-
-function listen(port) {
-  return new Promise((resolve, reject) => {
-    const server = app.listen(port, error => error
-      ? reject(error)
-      : resolve(server));
-  });
-}
-
-async function close(error) {
-  if (isClosing) {
-    return;
-  }
+const close = async (error) => {
+  if (isClosing) return;
   isClosing = true;
 
-  if (error) {
-    logger.error(`\n\n${indent(error.stack)}\n`);
-  }
+  if (error) logger.error(`\n\n${indent(error.stack)}\n`);
 
   if (server) {
     logger.debug('Closing HTTP server...');
@@ -152,9 +52,7 @@ async function close(error) {
     logger.info('Closed HTTP server.');
   }
 
-  if (page) {
-    await page.evaluate('close()');
-  }
+  if (page) await page.evaluate('close()');
 
   if (browser) {
     logger.debug('Closing browser...');
@@ -162,62 +60,101 @@ async function close(error) {
     logger.info('Closed browser.');
   }
 
-  if (error) {
-    process.exit(1);
-    return;
-  }
-  process.exit();
+  process.exit(error ? 1 : 0);
 }
 
-function indent(str, n) {
-  return str.split('\n').map(line => `  ${line}`).join('\n');
+const indent = (str, n) => str.split('\n').map(line => `  ${line}`).join('\n');
+
+const listen = (port) => new Promise((resolve, reject) => {
+  const server = app.listen(port, error => error ? reject(error) : resolve(server));
+});
+
+const main = async ({ port, token, roomSid }) => {
+  logger.info(`\n
+  recording-bot's PID is ${process.pid}.
+
+  You can send SIGUSR2 to this PID to cause recording-bot to stop recording and to
+  disconnect from the Room. For example,
+
+    kill -s USR2 ${process.pid}
+
+  Happy recording!\n`);
+
+  logger.debug('Starting HTTP server...');
+  server = await listen(port);
+  logger.info(`Started HTTP server. Listening on ${port}.`);
+
+  logger.debug('Launching browser...');
+  browser = await puppeteer.launch({
+    args: [
+      '--disable-gesture-requirement-for-media-playback',
+      '--use-fake-ui-for-media-stream',
+    ]
+  });
+  logger.info('Launched browser.');
+
+  logger.debug('Opening new page...');
+  page = await browser.newPage();
+  logger.debug('Opened new page.');
+
+  logger.debug(`Navigating to http://localhost:${port}...`);
+  await page.goto(`http://localhost:${port}`, { waitUntil: 'domcontentloaded' });
+  logger.debug(`Navigated to http://localhost:${port}.`);
+
+  logger.debug('Registering callback(s)...');
+  await Promise.all([
+    page.exposeFunction('closeBrowser', () => close()),
+    page.exposeFunction('debug', message => { logger.debug(message); }),
+    page.exposeFunction('error', message => { logger.error(message); }),
+    page.exposeFunction('info', message => { logger.info(message); }),
+    page.exposeFunction('createRecording', filepath => {
+      mkdirp(join(...filepath.slice(0, filepath.length - 1)));
+      unlink(join(...filepath));
+    }),
+    page.exposeFunction('appendRecording', (filepath, chunk) => {
+      const filename = join(...filepath);
+      const buffer = Buffer.from(stringToArrayBuffer(chunk));
+      appendFile(filename, buffer, error => error
+        ? logger.error(`\n\n${indent(error.stack)}\n`)
+        : logger.debug(`Wrote chunk (${buffer.byteLength} bytes)`)
+      );
+    }),
+  ]);
+  logger.debug('Registered callback(s).');
+
+  await page.evaluate(`main("${token}", "${roomSid}")`);
 }
 
-function stringToArrayBuffer(string) {
+const stringToArrayBuffer = (string) => {
   const buf = new ArrayBuffer(string.length);
   const bufView = new Uint8Array(buf);
 
-  for (let i=0; i < string.length; i++) {
-    bufView[i] = string.charCodeAt(i);
-  }
+  for (let i=0; i < string.length; i++) bufView[i] = string.charCodeAt(i);
 
   return buf;
 }
 
-[
-  'SIGUSR2',
-  'SIGINT'
-].forEach(signal => {
+['SIGUSR2', 'SIGINT'].forEach(signal => {
   process.on(signal, () => {
     logger.debug(`Received ${signal}.`);
-    shouldClose = true;
     close();
   });
 });
 
-const roomSid = process.argv.length > 2
-  ? process.argv[2]
-  : null;
-
-function createToken(identity) {
+const createToken = (identity) => {
   const token = new AccessToken(
     process.env.ACCOUNT_SID,
     process.env.API_KEY_SID,
     process.env.API_KEY_SECRET);
   token.identity = identity;
-  token.addGrant(new AccessToken.VideoGrant());
+  token.addGrant(new AccessToken.VoiceGrant({
+    outgoingApplicationSid: process.env.APP_SID,
+  }));
   return token.toJwt();
 }
 
-const token = createToken('recording-bot');
-
-const configuration = {
+main({
   port: 3000,
-  token,
-  roomSid
-};
-
-main(configuration).catch(error => {
-  shouldClose = true;
-  close(error);
-});
+  token: createToken(process.env.IDENTITY),
+  roomSid: process.argv.length > 2 ? process.argv[2] : null,
+}).catch(error => close(error));

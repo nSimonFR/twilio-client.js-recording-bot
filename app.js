@@ -1,151 +1,58 @@
 'use strict';
 
-const { connect } = require('twilio-video');
+const { Device } = require('twilio-client');
 
-const trackClassName = {
-  audio: 'RemoteAudioTrack',
-  video: 'RemoteVideoTrack'
-};
-
-let room = null;
-let shouldClose = false;
+let device = null;
+let conv = null;
 let isClosing = false;
 
-function indent(str, n) {
-  return str.split('\n').map(line => `  ${line}`).join('\n');
+const indent = str => str.split('\n').map(line => `  ${line}`).join('\n');
+
+// const recorders = new Map();
+// const subscriptionCounts = new Map();
+
+// function trackSubscribed(track, participant) {
+//   if (track.kind === 'data') {
+//     return;
+//   }
+//   let subscriptionCount = subscriptionCounts.get(track) || 0;
+//   subscriptionCount++;
+//   subscriptionCounts.set(track, subscriptionCount);
+//   const filepath = [
+//     // room.sid,
+//     // room.localParticipant.sid,
+//     // participant.sid,
+//     track.sid,
+//     `${subscriptionCount}.webm`
+//   ];
+//   record(track.mediaStreamTrack, filepath);
+// }
+
+// function trackUnsubscribed(track) {
+//   const recorder = recorders.get(track);
+//   recorders.delete(track);
+//   if (recorder) {
+//     info(`Stop recording ${recorder.filename}.`);
+//     recorder.stop();
+//   }
+// }
+
+const arrayBufferToString = (buffer) => {
+  const bufView = new Uint8Array(buffer);
+  const length = bufView.length;
+
+  let result = '';
+  let addition = Math.pow(2, 8) - 1;
+  for (let i = 0; i < length; i += addition) {
+    if (i + addition > length) addition = length - i;
+    result += String.fromCharCode.apply(null, bufView.subarray(i, i + addition));
+  }
+  return result;
 }
 
-window.addEventListener('error', event => {
-  error(`\n\n${indent(event.error.stack)}\n`);
-});
-
-window.onunhandledrejection = event => {
-  error(`\n\n${indent(event.reason.stack)}\n`);
-};
-
-async function main(token, roomSid) {
-  debug('Connecting to Room...');
-  room = await connect(token, {
-    name: roomSid,
-    tracks: []
-  });
-  info(`Connected to Room ${room.sid} as LocalParticipant ${room.localParticipant.sid}.`);
-  if (shouldClose) {
-    close();
-    return;
-  }
-
-  const participants = [...room.participants.values()];
-  if (!participants.length) {
-    info('There are no RemoteParticipants in the Room.');
-  } else {
-    let message = `There ${participants.length > 1 ? 'are' : 'is'} \
-${participants.length} RemoteParticipant${participants.length > 1 ? 's' : ''} \
-in the Room:\n\n`;
-    participants.forEach(participant => {
-      message += `  - RemoteParticipant ${participant.sid}\n`;
-      participant.tracks.forEach(track => {
-        if (track.kind === 'data') {
-          return;
-        }
-        message += `    - ${trackClassName[track.kind]} ${track.sid}\n`;
-      });
-    });
-    info(message);
-    participants.forEach(participant => {
-      participant.tracks.forEach(track => trackSubscribed(track, participant));
-    });
-  }
-
-  room.on('participantConnected', participant => {
-    info(`RemoteParticipant ${participant.sid} connected.`);
-  });
-
-  room.on('participantDisconnected', participant => {
-    info(`RemoteParticipant ${participant.sid} disconnected.`);
-  });
-
-  room.on('trackSubscribed', (track, participant) => {
-    if (track.kind === 'data') {
-      return;
-    }
-    info(`Subscribed to ${trackClassName[track.kind]} ${track.sid} published \
-by RemoteParticipant ${participant.sid}`);
-    trackSubscribed(track, participant);
-  });
-
-  room.on('trackUnsubscribed', (track, participant) => {
-    if (track.kind === 'data') {
-      return;
-    }
-    info(`Unsubscribed from ${trackClassName[track.kind]} ${track.sid} \
-published by RemoteParticipant ${participant.sid}`);
-    trackUnsubscribed(track, participant);
-  });
-
-  room.once('disconnected', (room, error) => {
-    info(`Disconnected from Room.`);
-    close(error);
-  });
-
-  return {
-    roomSid: room.sid,
-    localParticipantSid: room.localParticipant.sid
-  };
-}
-
-window.main = main;
-
-function close(error) {
-  if (isClosing) {
-    return;
-  }
-  isClosing = true;
-
-  recorders.forEach((recorder, track) => {
-    trackUnsubscribed(track);
-  });
-
-  if (room && room.state !== 'disconnected') {
-    info('Disconnecting from Room...');
-    room.disconnect();
-  }
-}
-
-window.close = close;
-
-function trackSubscribed(track, participant) {
-  if (track.kind === 'data') {
-    return;
-  }
-  let subscriptionCount = subscriptionCounts.get(track) || 0;
-  subscriptionCount++;
-  subscriptionCounts.set(track, subscriptionCount);
-  const filepath = [
-    room.sid,
-    room.localParticipant.sid,
-    participant.sid,
-    track.sid,
-    `${subscriptionCount}.webm`
-  ];
-  record(track.mediaStreamTrack, filepath);
-}
-
-function trackUnsubscribed(track) {
-  const recorder = recorders.get(track);
-  recorders.delete(track);
-  if (recorder) {
-    info(`Stop recording ${recorder.filename}.`);
-    recorder.stop();
-  }
-}
-
-const recorders = new Map();
-const subscriptionCounts = new Map();
-
-function record(track, filepath) {
+const record = (track, filepath) => {
   const filename = filepath.join('/');
-  info(`Begin recording ${filename}.`);
+  info(`Begining ${filename}.`);
   createRecording(filepath);
 
   const stream = new MediaStream([track]);
@@ -168,7 +75,7 @@ function record(track, filepath) {
   const recorder = new MediaRecorder(stream, { mimeType });
   recorder.filename = filename;
 
-  recorders.set(track, recorder);
+  // recorders.set(track, recorder);
 
   recorder.ondataavailable = event => {
     if (!event.data.size) {
@@ -185,19 +92,58 @@ function record(track, filepath) {
   recorder.start(100);
 }
 
-function arrayBufferToString(buffer) {
-  const bufView = new Uint8Array(buffer);
-  const length = bufView.length;
+window.addEventListener('error', event => {
+  error(`\n\n${indent(event.error.stack)}\n`);
+});
 
-  let result = '';
-  let addition = Math.pow(2, 8) - 1;
+window.onunhandledrejection = event => {
+  error(`\n\n${indent(event.reason.stack)}\n`);
+};
 
-  for (let i = 0; i < length; i += addition) {
-    if (i + addition > length){
-        addition = length - i;
+window.main = (token, to) => {
+  device = new Device(token, {
+    codecPreferences: ['opus', 'pcmu'],
+    fakeLocalDTMF: false,
+  });
+  debug('Device is being created...');
+
+  device.on('ready', function (device) {
+    debug('Device Ready.');
+
+    info('Connecting to ' + to + '...');
+    conv = device.connect({
+      To: to, // TODO Handle other parameters
+    });
+  });
+
+  device.on('error', function (err) {
+    error('Device ' + err.message);
+  });
+
+  device.on('connect', function (conn) {
+    debug('Device Connected.');
+    const tracks = conn.mediaStream._remoteStream.getAudioTracks();
+    for (let index = 0; index < tracks.length; index++) {
+      const track = tracks[index];
+      record(track, [index.toString() + '.ogg']);
     }
-    result += String.fromCharCode.apply(null, bufView.subarray(i, i + addition));
-  }
+  });
 
-  return result;
+  device.on('disconnect', function (conn) {
+    info('Call ended.');
+    close();
+  });
+}
+
+window.close = () => {
+  if (isClosing) return;
+  isClosing = true;
+
+  // recorders.forEach((recorder, track) => {
+  //   trackUnsubscribed(track);
+  // });
+
+  if (device) device.destroy();
+
+  closeBrowser();
 }

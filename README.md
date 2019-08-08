@@ -16,6 +16,9 @@ That being said, if regulations restrict you from using Twilio's recording
 solution or **if you need to get the audio stream real-time**, you may be interested in this
 approach.
 
+### *Update 2019/08/06*: You may build an easier solution using Twilio new [Stream](https://www.twilio.com/docs/voice/twiml/stream) feature.
+
+
 Installation
 ------------
 
